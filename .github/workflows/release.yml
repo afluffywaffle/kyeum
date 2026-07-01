@@ -1,0 +1,84 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-dmg:
+    runs-on: macos-15        # Xcode 16, required for PBXFileSystemSynchronizedRootGroup
+    permissions:
+      contents: write        # needed to create the GitHub Release
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer
+
+      - name: Build (Release, no sandbox/signing for unsigned distribution)
+        run: |
+          xcodebuild \
+            -project Kyeum.xcodeproj \
+            -scheme Kyeum \
+            -configuration Release \
+            -sdk macosx \
+            -derivedDataPath DerivedData \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            ENABLE_APP_SANDBOX=NO \
+            | xcpretty || true
+
+      - name: Locate built app
+        id: app
+        run: |
+          APP=$(find DerivedData -name "Kyeum.app" -type d | head -1)
+          echo "path=$APP" >> "$GITHUB_OUTPUT"
+          echo "Found: $APP"
+
+      - name: Ad-hoc sign
+        run: codesign --force --deep -s - "${{ steps.app.outputs.path }}"
+
+      - name: Build DMG
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          DMG_NAME="Kyeum-${VERSION}.dmg"
+
+          # Stage: app + Applications shortcut so users can drag-install
+          mkdir -p dmg_stage
+          cp -r "${{ steps.app.outputs.path }}" dmg_stage/
+          ln -s /Applications dmg_stage/Applications
+
+          hdiutil create \
+            -volname "Kyeum ${VERSION}" \
+            -srcfolder dmg_stage \
+            -ov \
+            -format UDZO \
+            "$DMG_NAME"
+
+          echo "dmg_name=$DMG_NAME" >> "$GITHUB_ENV"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Kyeum ${{ github.ref_name }}"
+          body: |
+            ## Install
+
+            1. Download `Kyeum-${{ github.ref_name }}.dmg`
+            2. Open the DMG and drag **Kyeum.app** to Applications
+            3. First launch: right-click → **Open** → Open (Gatekeeper bypass — unsigned build)
+
+            To skip the dialog entirely:
+            ```bash
+            xattr -dr com.apple.quarantine /Applications/Kyeum.app
+            ```
+
+            ---
+            See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for what's new.
+          files: "${{ env.dmg_name }}"
+          draft: false
+          prerelease: false
